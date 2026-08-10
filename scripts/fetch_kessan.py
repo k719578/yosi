@@ -15,7 +15,7 @@ import requests
 OUT_DIR = Path("results/kessan")
 HEADERS = {"User-Agent": "Mozilla/5.0 (kessan fetcher for personal screening)"}
 
-# 各銘柄: 直リンク候補(新しい順に試す)。空なら決算プロから探す。
+# 各銘柄: 直リンク候補(新しい順に試す)。scrape はIRページからPDFリンクを探す。
 TARGETS = [
     {
         "code": "7034",
@@ -25,7 +25,15 @@ TARGETS = [
     {
         "code": "6619",
         "name": "ダブル・スコープ",
-        "urls": ["https://www.release.tdnet.info/inbs/140120260319585267.pdf"],
+        # TDnet ID から JPX開示ミラーと Yahoo ストレージのURLを構成
+        # 140120260611567862 = 2027年1月期Q1短信(2026-06-11) / 140120260319585267 = 2026年1月期本決算
+        "urls": [
+            "https://www2.jpx.co.jp/disc/66190/140120260611567862.pdf",
+            "https://finance-frontend-pc-dist.west.edge.storage-yahoo.jp/disclosure/20260611/20260611567862.pdf",
+            "https://www2.jpx.co.jp/disc/66190/140120260319585267.pdf",
+            "https://finance-frontend-pc-dist.west.edge.storage-yahoo.jp/disclosure/20260319/20260319585267.pdf",
+        ],
+        "scrape": ["https://w-scope.co.jp/ir/library/earning.html"],
     },
     {
         "code": "1897",
@@ -34,7 +42,12 @@ TARGETS = [
             "https://finance-frontend-pc-dist.west.edge.storage-yahoo.jp/disclosure/20260513/20260402597678.pdf"
         ],
     },
-    {"code": "5918", "name": "瀧上工業", "urls": []},
+    {
+        "code": "5918",
+        "name": "瀧上工業",
+        "urls": [],
+        "scrape": ["https://www.takigami.co.jp/ir_information/ir_information.html"],
+    },
     {
         "code": "6986",
         "name": "双葉電子工業",
@@ -42,26 +55,38 @@ TARGETS = [
             "https://finance-frontend-pc-dist.west.edge.storage-yahoo.jp/disclosure/20260512/20260511523151.pdf"
         ],
     },
-    {"code": "5921", "name": "川岸工業", "urls": []},
+    {
+        "code": "5921",
+        "name": "川岸工業",
+        "urls": [],
+        "scrape": ["https://kawagishi.co.jp/ir/library/"],
+    },
 ]
 
 ANCHOR_RE = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 
 
-def kabupro_latest_tanshin(code: str) -> list[str]:
-    """決算プロの銘柄ページから決算短信PDFのURL候補(新しい順)を返す。"""
-    url = f"http://ke.kabupro.jp/code/{code}.htm"
-    r = requests.get(url, headers=HEADERS, timeout=30)
+def scrape_pdf_links(page_url: str) -> list[str]:
+    """IRページからPDFリンク候補を返す。短信らしいリンクを優先し、全候補をログに出す。"""
+    from urllib.parse import urljoin
+
+    r = requests.get(page_url, headers=HEADERS, timeout=30)
     r.encoding = r.apparent_encoding
-    cands = []
+    preferred, others = [], []
     for href, text in ANCHOR_RE.findall(r.text):
-        text = re.sub(r"<[^>]+>", "", text)
-        if "決算短信" in text and href.lower().endswith(".pdf"):
-            if href.startswith("/"):
-                href = "http://ke.kabupro.jp" + href
-            elif not href.startswith("http"):
-                href = "http://ke.kabupro.jp/code/" + href
-            cands.append(href)
+        if ".pdf" not in href.lower():
+            continue
+        text = re.sub(r"<[^>]+>", " ", text)
+        full = urljoin(page_url, href)
+        hay = (href + " " + text).lower()
+        if any(k in hay for k in ["短信", "tanshin", "kessan", "results", "1401"]):
+            preferred.append(full)
+        else:
+            others.append(full)
+    cands = preferred + others
+    print(f"    {page_url} のPDFリンク候補 (先頭10件):")
+    for u in cands[:10]:
+        print(f"      - {u}")
     return cands
 
 
@@ -95,11 +120,15 @@ def main() -> int:
     for t in TARGETS:
         code, name = t["code"], t["name"]
         print(f"[{code}] {name}")
+        if (OUT_DIR / f"{code}.txt").exists():
+            print("    取得済みのためスキップ")
+            continue
         urls = list(t["urls"])
-        try:
-            urls += kabupro_latest_tanshin(code)[:3]
-        except Exception as e:
-            print(f"    決算プロの一覧取得失敗: {e}")
+        for page in t.get("scrape", []):
+            try:
+                urls += scrape_pdf_links(page)[:5]
+            except Exception as e:
+                print(f"    スクレイプ失敗: {page} ({e})")
 
         content = None
         used = None
