@@ -61,8 +61,10 @@ TARGETS = [
     {
         "code": "5921",
         "name": "川岸工業",
+        # IRページはJS描画のため取得不可。TDnetの日次一覧(公開後31日間有効)から探す
+        # 2026年9月期Q3短信は2026-07-31発表
         "urls": [],
-        "scrape": ["https://kawagishi.co.jp/ir/library/"],
+        "tdnet": {"date": "20260731", "match": "川岸"},
     },
 ]
 
@@ -111,6 +113,28 @@ def scrape_pdf_links(page_url: str, depth: int = 1) -> list[str]:
     return cands
 
 
+def tdnet_day_pdfs(date: str, match: str) -> list[str]:
+    """TDnetの日次開示一覧(公開後31日間有効)から社名matchに合う決算短信PDFを探す。"""
+    base = "https://www.release.tdnet.info/inbs/"
+    cands = []
+    for page in range(1, 16):
+        url = f"{base}I_list_{page:03d}_{date}.html"
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            if r.status_code != 200:
+                break
+            r.encoding = r.apparent_encoding
+        except Exception as e:
+            print(f"    TDnet一覧取得失敗: {url} ({e})")
+            break
+        for row in re.split(r"<tr", r.text)[1:]:
+            if match in row and "短信" in row:
+                for href in re.findall(r'href="([^"]+\.pdf)"', row):
+                    cands.append(href if href.startswith("http") else base + href.lstrip("./"))
+    print(f"    TDnet {date} の「{match}」短信候補: {cands}")
+    return cands
+
+
 def download(url: str) -> bytes | None:
     try:
         r = requests.get(url, headers=HEADERS, timeout=60)
@@ -145,6 +169,11 @@ def main() -> int:
             print("    取得済みのためスキップ")
             continue
         urls = list(t["urls"])
+        if "tdnet" in t:
+            try:
+                urls += tdnet_day_pdfs(t["tdnet"]["date"], t["tdnet"]["match"])[:3]
+            except Exception as e:
+                print(f"    TDnet探索失敗: {e}")
         for page in t.get("scrape", []):
             try:
                 urls += scrape_pdf_links(page)[:5]
