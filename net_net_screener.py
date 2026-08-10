@@ -421,6 +421,63 @@ OUTPUT_COLS = [
 ]
 
 
+def _top30_view(hits: pd.DataFrame) -> pd.DataFrame:
+    top = hits.head(30).copy()
+    top["時価総額(億円)"] = (top["時価総額"] / 1e8).round(1)
+    top["正味流動資産(億円)"] = (top["正味流動資産"] / 1e8).round(1)
+    top["営業利益(億円)"] = (top["直近営業利益"] / 1e8).round(1)
+    top["ネットネット指数"] = top["ネットネット指数"].round(3)
+    top["PBR"] = top["PBR"].round(2)
+    return top[["銘柄コード", "銘柄名", "業種", "株価", "時価総額(億円)",
+                "正味流動資産(億円)", "ネットネット指数", "グレアム基準該当",
+                "PBR", "営業利益(億円)"]]
+
+
+def write_markdown(hits: pd.DataFrame, all_df: pd.DataFrame,
+                   skipped: pd.DataFrame, path: str) -> None:
+    """スマホでも読みやすいMarkdownサマリーを出力する。"""
+    n_hit = len(hits)
+    n_graham = int(hits["グレアム基準該当"].sum()) if n_hit else 0
+    lines = [
+        f"# ネットネット株スクリーニング結果 ({time.strftime('%Y-%m-%d')})",
+        "",
+        f"- 計算対象: **{len(all_df)}銘柄** / スキップ: {len(skipped)}銘柄",
+        f"- 抽出(ネットネット指数 < 1.0): **{n_hit}銘柄**",
+        f"- うちグレアム基準(指数 < 0.67): **{n_graham}銘柄**",
+        "",
+        "## 上位30銘柄 (ネットネット指数 昇順)",
+        "",
+    ]
+    if n_hit:
+        lines.append(_top30_view(hits).to_markdown(index=False))
+        lines += ["", "## 業種の偏り (抽出銘柄の業種内訳)", ""]
+        vc = hits["業種"].value_counts()
+        lines.append("| 業種 | 銘柄数 |")
+        lines.append("|---|---|")
+        lines += [f"| {k} | {v} |" for k, v in vc.items()]
+        lines += ["", "## ネットネット指数の分布", ""]
+        bins = [0, 0.5, 0.67, 0.8, 0.9, 1.0]
+        labels = ["〜0.5", "0.5〜0.67", "0.67〜0.8", "0.8〜0.9", "0.9〜1.0"]
+        dist = pd.cut(hits["ネットネット指数"], bins=bins, labels=labels) \
+            .value_counts().reindex(labels)
+        lines.append("| 指数レンジ | 銘柄数 |")
+        lines.append("|---|---|")
+        lines += [f"| {k} | {int(v)} |" for k, v in dist.items()]
+    else:
+        lines.append("該当銘柄なし")
+    lines += [
+        "",
+        "> **注意**: yfinance の財務データは連結/単体の別・項目名の揺れ・更新遅延に"
+        "より不正確な場合があります。上位銘柄は必ず最新の決算短信(貸借対照表)で"
+        "数値を確認してください。",
+        "",
+    ]
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(lines), encoding="utf-8")
+    log.info("Markdownサマリー出力: %s", path)
+
+
 def report(hits: pd.DataFrame, all_df: pd.DataFrame,
            skipped: pd.DataFrame) -> None:
     hits_out = hits[OUTPUT_COLS + ["業種"]] if not hits.empty else hits
@@ -435,15 +492,7 @@ def report(hits: pd.DataFrame, all_df: pd.DataFrame,
     if hits.empty:
         print("該当銘柄なし")
     else:
-        top = hits.head(30).copy()
-        top["時価総額(億円)"] = (top["時価総額"] / 1e8).round(1)
-        top["正味流動資産(億円)"] = (top["正味流動資産"] / 1e8).round(1)
-        top["営業利益(億円)"] = (top["直近営業利益"] / 1e8).round(1)
-        top["ネットネット指数"] = top["ネットネット指数"].round(3)
-        top["PBR"] = top["PBR"].round(2)
-        view = top[["銘柄コード", "銘柄名", "業種", "株価", "時価総額(億円)",
-                    "正味流動資産(億円)", "ネットネット指数", "グレアム基準該当",
-                    "PBR", "営業利益(億円)"]]
+        view = _top30_view(hits)
         try:
             from tabulate import tabulate
             print(tabulate(view, headers="keys", tablefmt="simple",
@@ -500,6 +549,8 @@ def main(argv=None) -> int:
                     help="有価証券・投資有価証券の欠損もスキップ扱いにする")
     ap.add_argument("--sleep", type=float, default=SLEEP_BASE,
                     help=f"銘柄間の基本スリープ秒 (default: {SLEEP_BASE})")
+    ap.add_argument("--markdown", metavar="PATH", default=None,
+                    help="結果サマリーをMarkdownで出力するパス")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
@@ -523,6 +574,8 @@ def main(argv=None) -> int:
     all_df, skipped = evaluate(stocks, cache, strict=args.strict)
     hits = screen(all_df)
     report(hits, all_df, skipped)
+    if args.markdown:
+        write_markdown(hits, all_df, skipped, args.markdown)
     return 0
 
 

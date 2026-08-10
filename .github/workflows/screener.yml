@@ -1,0 +1,92 @@
+name: net-net-screener
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: '銘柄数の上限(空欄=全銘柄)'
+        required: false
+        default: ''
+      refresh:
+        description: 'キャッシュを無視して財務データを再取得'
+        type: boolean
+        default: false
+      sleep:
+        description: '銘柄間スリープ秒'
+        required: false
+        default: '0.6'
+  # 毎週自動実行したい場合は以下の2行のコメントを外してデフォルトブランチに
+  # マージしてください(scheduleはデフォルトブランチでのみ動作 / 時刻はUTC)。
+  # 例: 土曜21:00 UTC = 日曜6:00 JST
+  # schedule:
+  #   - cron: '0 21 * * 6'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: net-net-screener
+  cancel-in-progress: false
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 前回実行の財務データキャッシュを復元(途中で止まっても続きから再開)
+      - name: Restore fundamentals cache
+        uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: fundamentals-${{ github.run_id }}
+          restore-keys: |
+            fundamentals-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run screener
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ inputs.limit }}"
+          fi
+          if [ "${{ inputs.refresh }}" = "true" ]; then
+            ARGS="$ARGS --refresh"
+          fi
+          # ジョブ強制終了(6時間)前に自発的に止めてキャッシュ保存を確実にする
+          timeout --signal=INT --kill-after=60 300m \
+            python net_net_screener.py \
+              --sleep "${{ inputs.sleep || '0.6' }}" \
+              --markdown results/summary.md \
+              $ARGS
+
+      # 失敗・タイムアウト時も取得済みデータは保存し、次回再開できるようにする
+      - name: Save fundamentals cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: fundamentals-${{ github.run_id }}
+
+      - name: Commit results
+        if: success()
+        run: |
+          mkdir -p results
+          cp net_net_results.csv all_data.csv skipped.csv results/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f results/
+          if git diff --cached --quiet; then
+            echo "結果に変更なし"
+          else
+            git commit -m "スクリーニング結果を更新 ($(date -u -d '+9 hours' +%Y-%m-%d) JST)"
+            git pull --rebase origin "${{ github.ref_name }}"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
