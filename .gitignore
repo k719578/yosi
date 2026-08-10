@@ -1,0 +1,11 @@
+# データキャッシュと出力
+cache/
+net_net_results.csv
+all_data.csv
+skipped.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
