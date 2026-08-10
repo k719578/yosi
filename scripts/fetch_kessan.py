@@ -38,8 +38,11 @@ TARGETS = [
     {
         "code": "1897",
         "name": "金下建設",
-        "urls": [
-            "https://finance-frontend-pc-dist.west.edge.storage-yahoo.jp/disclosure/20260513/20260402597678.pdf"
+        # 12月決算に移行済み。IRライブラリと短信一覧(記事ページ経由の二段階)から探す
+        "urls": [],
+        "scrape": [
+            "https://www.kaneshita.co.jp/ir/library/",
+            "https://www.kaneshita.co.jp/news-cat/financial_results/",
         ],
     },
     {
@@ -66,24 +69,42 @@ TARGETS = [
 ANCHOR_RE = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.S | re.I)
 
 
-def scrape_pdf_links(page_url: str) -> list[str]:
-    """IRページからPDFリンク候補を返す。短信らしいリンクを優先し、全候補をログに出す。"""
+def scrape_pdf_links(page_url: str, depth: int = 1) -> list[str]:
+    """IRページからPDFリンク候補を返す。短信らしいリンクを優先し、全候補をログに出す。
+
+    PDF直リンクが見つからない場合は「決算短信」を含むリンク先(記事ページ等)を
+    depth 段階まで辿って探す。
+    """
     from urllib.parse import urljoin
 
     r = requests.get(page_url, headers=HEADERS, timeout=30)
     r.encoding = r.apparent_encoding
-    preferred, others = [], []
+    preferred, others, subpages = [], [], []
     for href, text in ANCHOR_RE.findall(r.text):
-        if ".pdf" not in href.lower():
-            continue
         text = re.sub(r"<[^>]+>", " ", text)
         full = urljoin(page_url, href)
-        hay = (href + " " + text).lower()
-        if any(k in hay for k in ["短信", "tanshin", "kessan", "results", "1401"]):
-            preferred.append(full)
-        else:
-            others.append(full)
+        hay = href.lower() + " " + text
+        if ".pdf" in href.lower():
+            if any(k in hay for k in ["短信", "tanshin", "kessan", "results", "1401"]):
+                preferred.append(full)
+            else:
+                others.append(full)
+        elif "決算短信" in text and full != page_url:
+            subpages.append(full)
+
+    if subpages:
+        print(f"    {page_url} の短信記事リンク候補 (先頭5件):")
+        for u in subpages[:5]:
+            print(f"      - {u}")
+
     cands = preferred + others
+    if not preferred and subpages and depth > 0:
+        for sub in subpages[:3]:
+            try:
+                cands = scrape_pdf_links(sub, depth=depth - 1) + cands
+            except Exception as e:
+                print(f"    下位ページ取得失敗: {sub} ({e})")
+
     print(f"    {page_url} のPDFリンク候補 (先頭10件):")
     for u in cands[:10]:
         print(f"      - {u}")
